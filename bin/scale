@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# http://github.com/flesch/scale
+# [heroku run] bash bin/scale --app [name] --web [n] --heroku [key] --hipchat [key] --room [id] --force
+
+usage() {
+cat <<EOF
+Usage: scale [options]
+
+         --app    # Your Heroku app name.
+                  # This can also be set as an environmental variable: HEROKU_APP_NAME
+       --force    # Include --force to always run the script, even on weekends.
+     --web [n]    # Scale the web process.
+  --worker [n]    # Scale the worker process.
+      --heroku    # Your Heroku API key.
+                  # Find your API key here: https://dashboard.heroku.com/account
+                  # This can also be set as an environmental variable: HEROKU_API_KEY
+     --hipchat    # Your HipChat Auth token.
+                  # Find or generate a token here: https://hipchat.com/admin/api
+                  # This can also be set as an environmental variable: HIPCHAT_API_KEY
+   --room [id]    # Specify which HipChat room to post to.
+                  # Find the Room ID here: https://hipchat.com/rooms/ids
+                  # This can also be set as an environmental variable: HIPCHAT_ROOM_ID
+
+EOF
+exit;
+}
+
+if [ $# = 0 ]; then usage; fi
+
+# By default, we won't scale on the weekend. Including the --force option
+# will change $force to 0 (which is true in bash).
+force=1
+
+# Heroku
+heroku=$HEROKU_API_KEY
+app=$HEROKU_APP_NAME
+process=web
+quantity=1
+
+# HipChat
+hipchat=$HIPCHAT_API_KEY # Get an API Auth Token from https://vzw.hipchat.com/admin/api
+room=$HIPCHAT_ROOM_ID # Get the Room ID you want to post to from https://hipchat.com/rooms/ids
+
+# Option Parsing
+# http://stackoverflow.com/a/6946864
+options=$@
+arguments=($options)
+index=0
+for argument in $options
+  do
+    index=`expr $index + 1`
+    case $argument in
+            --app)  app=${arguments[index]} ;;
+          --force)  force=0 ;;
+            --web)  process=web ; quantity=${arguments[index]} ;;
+         --worker)  process=worker ; quantity=${arguments[index]} ;;
+           --room)  room=${arguments[index]} ;;
+         --heroku)  heroku=${arguments[index]} ;;
+        --hipchat)  hipchat=${arguments[index]} ;;
+           --help)  usage ;;
+    esac
+  done
+
+# If it's the weekend, exit the script. (We'll also log a message so we at least know something happened.)
+[[ $(date +%u) -gt 5 && $force == 1 ]] && echo "It's the weekend. Exiting." && exit;
+
+# 
+if [[ $heroku && $app ]]; then
+  
+  # Use the Heroku REST API to scale a process.
+  scale=$(curl --silent -H "Accept: application/json" -u :$heroku -d "type=$process" -d "qty=$quantity" -X POST https://api.heroku.com/apps/$app/ps/scale)
+  
+  # For humans.
+  s=$([ "$scale" -gt 1 ] && echo "processes" || echo "process")
+  message="$app scaled to $scale $process $s (heroku ps:scale $process=$scale)"
+  
+  # If HipChat details are defined, post the message.
+  if [[ $hipchat && $room ]]; then
+    curl --silent --output /dev/null -d "format=json&auth_token=$hipchat&room_id=$room&from=Heroku&color=purple&message=${message// /+}&message_format=text" -X POST https://api.hipchat.com/v1/rooms/message
+  fi
+  
+  echo $message
+  
+else
+  
+  echo "Error: Some Heroku details are missing."
+  echo "       HEROKU_API_KEY:  ${heroku:-(not set)}"
+  echo "       HEROKU_APP_NAME: ${app:-(not set)}"
+  
+fi
+
+exit;
